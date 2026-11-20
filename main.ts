@@ -1,76 +1,105 @@
-// The World in One Image — 20 November 2026 (Node 22, standard library only).
+// the-world-in-one-image-20 — carrier for the 20 November 2026 front page.
 //
-// One picture of Friday 20 November 2026, drawn as a front page: the UN
-// court's genocide ruling on Myanmar as the lead, and seven more of the
-// day's stories — Trump putting the Iran decision off to 2027, GTA VI
-// passing $1.80bn in sales, Cyclone Akvan's landfall in Odisha, Voyager 1
-// reaching a full light-day out, Hayabusa2's cancelled asteroid landing,
-// Europe ready for talks with Russia, and the Houthi strike on Riyadh.
-// The picture ships beside this file as entry.png; the program verifies it
-// against the gate's rules (a whole PNG or JPEG, at most 1 MiB, at most
-// 1024 by 1024 pixels) and copies it, byte for byte, to /output/entry.png.
-// Same input, same bytes out, every run. The picture is drawn once, by a
-// deterministic renderer, and never re-drawn at grade time: what the
-// grader reads is exactly the file committed here.
+// The entry is the picture, entry.png, a one-page newspaper for Friday
+// 20 November 2026. Its lead is the UN court's genocide ruling on
+// Myanmar; the other stories it carries are Trump deferring the Iran
+// decision to 2027, GTA VI passing $1.80bn in sales, Cyclone Akvan
+// coming ashore in Odisha, Voyager 1 reaching a full light-day out,
+// Hayabusa2's cancelled asteroid landing, Europe ready for talks with
+// Russia, and the Houthi strike on Riyadh.
 //
-// Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
+// This program does only one thing: it checks the picture against the
+// gate's rules — whole PNG or JPEG, at most 1 MiB, at most 1024x1024 —
+// and copies it byte for byte to /output/entry.png, where the house
+// reads it. Outside the grader's container, MAKEFUN_OUTPUT_DIR stands
+// in for /output:
+//
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
+//
+// Node 22, standard library only.
 
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-const LIMITS = { bytes: 1_048_576, side: 1024 };
-const bytes = readFileSync(new URL('./entry.png', import.meta.url));
+const MAX_BYTES = 1_048_576;
+const MAX_SIDE = 1024;
 
-const problems: string[] = [];
-if (bytes.length === 0) problems.push('the file is empty');
-if (bytes.length > LIMITS.bytes) problems.push(`${bytes.length} bytes is over the 1 MiB cap`);
+const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+const JPEG_MAGIC = [0xff, 0xd8, 0xff];
 
-const pngMagic = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
-const kind = pngMagic.every((b, i) => bytes[i] === b)
-  ? 'PNG'
-  : bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
-    ? 'JPEG'
-    : null;
-if (kind === null) problems.push('the first bytes are neither the PNG nor the JPEG signature');
-
-let width = 0;
-let height = 0;
-if (kind === 'PNG') {
-  if (bytes.length < 24 || bytes.toString('ascii', 12, 16) !== 'IHDR') {
-    problems.push('no IHDR chunk where a PNG keeps it');
-  } else {
-    width = bytes.readUInt32BE(16);
-    height = bytes.readUInt32BE(20);
-  }
-  if (bytes.toString('ascii', bytes.length - 8, bytes.length - 4) !== 'IEND') {
-    problems.push('the file does not end with an IEND chunk (truncated?)');
-  }
-}
-if (kind === 'JPEG') {
-  // A whole JPEG ends FFD9; its start-of-frame segment carries the size.
-  if (bytes[bytes.length - 2] !== 0xff || bytes[bytes.length - 1] !== 0xd9) {
-    problems.push('the file does not end with the JPEG end-of-image marker (truncated?)');
-  }
-  for (let at = 2; at + 9 < bytes.length && width === 0;) {
-    if (bytes[at] !== 0xff) { at += 1; continue; }
-    const marker = bytes[at + 1];
-    if (marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker)) {
-      height = bytes.readUInt16BE(at + 5);
-      width = bytes.readUInt16BE(at + 7);
-    } else {
-      at += 2 + bytes.readUInt16BE(at + 2);
-    }
-  }
-  if (width === 0) problems.push('no JPEG start-of-frame segment to read the size from');
-}
-if (width > LIMITS.side || height > LIMITS.side) {
-  problems.push(`the picture is ${width}x${height}, over the ${LIMITS.side} pixel cap`);
-}
-
-if (problems.length > 0) {
-  for (const p of problems) process.stderr.write(`news-image-20: ${p}\n`);
+function die(message: string): never {
+  process.stderr.write(`the-world-in-one-image-20: ${message}\n`);
   process.exit(1);
+}
+
+function startsWith(bytes: Buffer, magic: number[]): boolean {
+  return magic.every((byte, i) => bytes[i] === byte);
+}
+
+function readPngSize(bytes: Buffer): { width: number; height: number } {
+  // A PNG opens with its 8-byte signature, then a 4-byte length, the
+  // four letters IHDR, and the width and height as two big-endian words.
+  if (bytes.length < 33) die('PNG is too short to hold an IHDR chunk');
+  if (bytes.toString('ascii', 12, 16) !== 'IHDR') die('PNG has no IHDR chunk at offset 12');
+  const width = bytes.readUInt32BE(16);
+  const height = bytes.readUInt32BE(20);
+  // The file must close with the IEND chunk: length 0, the letters
+  // IEND, and its CRC — twelve bytes in all.
+  const tail = bytes.subarray(bytes.length - 12);
+  if (tail.readUInt32BE(0) !== 0 || tail.toString('ascii', 4, 8) !== 'IEND') {
+    die('PNG has no IEND chunk at the end');
+  }
+  return { width, height };
+}
+
+function readJpegSize(bytes: Buffer): { width: number; height: number } {
+  // Walk the JPEG marker segments. A segment is 0xFF, a marker byte,
+  // then a big-endian length covering the length field itself. The
+  // start-of-frame segment (0xC0-0xCF, except 0xC4, 0xC8 and 0xCC)
+  // carries the height and width as two big-endian words.
+  if (bytes[bytes.length - 2] !== 0xff || bytes[bytes.length - 1] !== 0xd9) {
+    die('JPEG has no FFD9 end marker');
+  }
+  let offset = 2;
+  while (offset + 1 < bytes.length) {
+    if (bytes[offset] !== 0xff) die('JPEG has a segment that does not start with 0xFF');
+    const marker = bytes[offset + 1];
+    if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) {
+      offset += 2; // standalone markers carry no length field
+      continue;
+    }
+    if (offset + 4 > bytes.length) die('JPEG segment is cut short');
+    const length = bytes.readUInt16BE(offset + 2);
+    if (length < 2 || offset + 2 + length > bytes.length) die('JPEG segment length runs past the end');
+    const isFrame = marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc;
+    if (isFrame) {
+      if (length < 7) die('JPEG start-of-frame segment is too short');
+      const height = bytes.readUInt16BE(offset + 5);
+      const width = bytes.readUInt16BE(offset + 7);
+      return { width, height };
+    }
+    offset += 2 + length;
+  }
+  die('JPEG has no start-of-frame segment');
+}
+
+const bytes = readFileSync(new URL('./entry.png', import.meta.url));
+if (bytes.length === 0) die('entry.png is empty');
+if (bytes.length > MAX_BYTES) die(`entry.png is ${bytes.length} bytes, over the 1 MiB cap`);
+
+let kind: 'PNG' | 'JPEG';
+let size: { width: number; height: number };
+if (startsWith(bytes, PNG_MAGIC)) {
+  kind = 'PNG';
+  size = readPngSize(bytes);
+} else if (startsWith(bytes, JPEG_MAGIC)) {
+  kind = 'JPEG';
+  size = readJpegSize(bytes);
+} else {
+  die('entry.png is neither a PNG nor a JPEG');
+}
+if (size.width > MAX_SIDE || size.height > MAX_SIDE) {
+  die(`image is ${size.width}x${size.height}, over the 1024x1024 cap`);
 }
 
 const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
@@ -78,5 +107,5 @@ mkdirSync(outDir, { recursive: true });
 const outFile = join(outDir, 'entry.png');
 writeFileSync(outFile, bytes);
 process.stdout.write(
-  `news-image-20: wrote ${outFile} (${bytes.length} bytes, ${kind}${width ? `, ${width}x${height}` : ''})\n`,
+  `the-world-in-one-image-20: wrote ${outFile} (${bytes.length} bytes, ${kind} ${size.width}x${size.height})\n`,
 );
